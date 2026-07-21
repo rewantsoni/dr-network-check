@@ -1,0 +1,40 @@
+## dr-network-check configuration file
+## Modify each kubeconfig path to point to your cluster kubeconfig files.
+
+clusters:
+  # Active ACM hub cluster (required)
+  hub:
+    kubeconfig: "{{ .HubKubeconfig }}"
+
+  # Passive ACM hub cluster (optional)
+  hub-passive:
+    kubeconfig: "{{ .HubPassiveKubeconfig }}"
+
+  # ODF cluster 1 - has rook/ceph running (required)
+  c1:
+    kubeconfig: "{{ .C1Kubeconfig }}"
+
+  # ODF cluster 2 - has rook/ceph running (required)
+  c2:
+    kubeconfig: "{{ .C2Kubeconfig }}"
+
+  # Client cluster attached to c1 (optional)
+  # If not set, c1 is used as the client cluster.
+  c1-client-1:
+    kubeconfig: "{{ .C1Client1Kubeconfig }}"
+
+  # Client cluster attached to c2 (optional)
+  # If not set, c2 is used as the client cluster.
+  c2-client-1:
+    kubeconfig: "{{ .C2Client1Kubeconfig }}"
+
+checks:
+  # Skip host-network port reachability checks between ODF clusters
+  skip-host-network-check: false
+  # Skip S3 route reachability checks
+  skip-s3-check: false
+  # Skip OCS provider server connectivity checks
+  skip-provider-check: false
+
+# Override the image used for test pods (default: registry.access.redhat.com/ubi9/ubi:latest)
+# test-pod-image: "registry.access.redhat.com/ubi9/ubi:latest"
