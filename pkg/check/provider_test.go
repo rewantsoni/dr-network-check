@@ -171,6 +171,84 @@ func TestGetNodePort(t *testing.T) {
 	}
 }
 
+func TestParseExportedAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		host    string
+		port    int32
+		service string
+	}{
+		{
+			"lb ip with port",
+			"10.48.101.50:50051",
+			"10.48.101.50", 50051, providerLBName,
+		},
+		{
+			"lb ip without port",
+			"10.48.101.50",
+			"10.48.101.50", 50051, providerLBName,
+		},
+		{
+			"lb hostname with port",
+			"lb.cloud.example.com:50051",
+			"lb.cloud.example.com", 50051, providerLBName,
+		},
+		{
+			"submariner dns with port",
+			"f36l016.ocs-provider-server.openshift-storage.svc.clusterset.local:50051",
+			"f36l016.ocs-provider-server.openshift-storage.svc.clusterset.local", 50051, "ocs-provider-server-submariner",
+		},
+		{
+			"submariner dns without port",
+			"f36l016.ocs-provider-server.openshift-storage.svc.clusterset.local",
+			"f36l016.ocs-provider-server.openshift-storage.svc.clusterset.local", 50051, "ocs-provider-server-submariner",
+		},
+		{
+			"custom port",
+			"10.48.101.50:9443",
+			"10.48.101.50", 9443, providerLBName,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, svc := parseExportedAddress(tt.addr)
+			if host != tt.host {
+				t.Errorf("host = %q, want %q", host, tt.host)
+			}
+			if port != tt.port {
+				t.Errorf("port = %d, want %d", port, tt.port)
+			}
+			if svc != tt.service {
+				t.Errorf("service = %q, want %q", svc, tt.service)
+			}
+		})
+	}
+}
+
+func TestClassifyEndpointService(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"submariner dns", "f36l016.ocs-provider-server.openshift-storage.svc.clusterset.local", "ocs-provider-server-submariner"},
+		{"ip address", "10.48.101.50", providerLBName},
+		{"lb hostname", "lb.cloud.example.com", providerLBName},
+		{"generic hostname", "some-host", providerLBName},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyEndpointService(tt.host)
+			if got != tt.want {
+				t.Errorf("classifyEndpointService(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReachabilityHint(t *testing.T) {
 	tests := []struct {
 		name    string

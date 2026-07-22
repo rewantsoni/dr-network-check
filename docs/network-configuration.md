@@ -59,6 +59,23 @@ oc get routes s3 -n openshift-storage
 
 The `ocs-provider-server` service runs on each base cluster and exposes a gRPC endpoint (default port `50051`) over HTTPS. The peer base cluster communicates with this endpoint for storage provider operations.
 
+#### Exported address annotation
+
+If the StorageCluster has the annotation `ocs.openshift.io/api-server-exported-address`, the tool uses that value as the authoritative endpoint. This is the address the OCS operator is actually advertising to peers.
+
+```bash
+oc get storagecluster ocs-storagecluster -n openshift-storage \
+  -o jsonpath='{.metadata.annotations.ocs\.openshift\.io/api-server-exported-address}'
+```
+
+When the annotation is present:
+
+- The annotated endpoint is tested for reachability from the peer cluster — **FAIL** if unreachable
+- The annotated endpoint is checked against the peer's noProxy configuration — **FAIL** if not covered
+- Service discovery (LoadBalancer, NodePort, ClusterIP) is skipped since the annotation is definitive
+
+When the annotation is absent, the tool falls back to discovering the endpoint from the `ocs-provider-server` service based on its type:
+
 The service can be one of three types:
 
 #### LoadBalancer

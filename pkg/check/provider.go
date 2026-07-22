@@ -3,7 +3,9 @@ package check
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -18,8 +20,10 @@ import (
 )
 
 const (
-	providerServiceName = "ocs-provider-server"
-	providerLBName      = "ocs-provider-server-load-balancer"
+	providerServiceName        = "ocs-provider-server"
+	providerLBName             = "ocs-provider-server-load-balancer"
+	exportedAddressAnnotation  = "ocs.openshift.io/api-server-exported-address"
+	defaultProviderPort        = int32(50051)
 )
 
 var (
@@ -67,6 +71,26 @@ func CheckOCSProvider(ctx context.Context, clusters *cluster.Clusters) []CheckRe
 
 func checkProviderServices(ctx context.Context, cl, peerCl, hub *cluster.Cluster) []CheckResult {
 	var results []CheckResult
+
+	exportedAddr, err := getExportedAddress(ctx, cl)
+	if err != nil {
+		console.Warn("Could not check StorageCluster annotation on %s: %v", cl.Name, err)
+	}
+
+	if exportedAddr != "" {
+		console.Step("Found exported address on %s: %s", cl.Name, exportedAddr)
+		host, port, svc := parseExportedAddress(exportedAddr)
+		endpoints := []providerEndpoint{{host: host, port: port, service: svc}}
+
+		proxyResults := checkProviderNoProxy(ctx, peerCl, cl.Name, []string{host})
+		results = append(results, proxyResults...)
+
+		reachResults := testProviderReachability(ctx, peerCl, cl.Name, endpoints)
+		results = append(results, reachResults...)
+
+		return results
+	}
+
 	var endpoints []providerEndpoint
 	var noProxyHosts []string
 
@@ -551,6 +575,43 @@ func normalizeAPIURL(rawURL string) string {
 	}
 
 	return strings.TrimRight(u.Host, "/")
+}
+
+func getExportedAddress(ctx context.Context, cl *cluster.Cluster) (string, error) {
+	dynClient, err := dynamic.NewForConfig(cl.RestConfig)
+	if err != nil {
+		return "", fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	obj, err := dynClient.Resource(storageClusterGVR).Namespace(storageNamespace).Get(
+		ctx, "ocs-storagecluster", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting StorageCluster: %w", err)
+	}
+
+	return obj.GetAnnotations()[exportedAddressAnnotation], nil
+}
+
+func parseExportedAddress(addr string) (string, int32, string) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, defaultProviderPort, classifyEndpointService(addr)
+	}
+
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return host, defaultProviderPort, classifyEndpointService(host)
+	}
+
+	return host, int32(p), classifyEndpointService(host)
+}
+
+func classifyEndpointService(host string) string {
+	if strings.Contains(host, ".svc.clusterset.local") {
+		return fmt.Sprintf("%s-submariner", providerServiceName)
+	}
+
+	return providerLBName
 }
 
 func checkProviderNoProxy(ctx context.Context, peerCl *cluster.Cluster, srcClName string, hosts []string) []CheckResult {
