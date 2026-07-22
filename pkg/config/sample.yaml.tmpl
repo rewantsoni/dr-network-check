@@ -29,8 +29,8 @@ clusters:
     kubeconfig: "{{ .C2Client1Kubeconfig }}"
 
 checks:
-  # Skip host-network port reachability checks between ODF clusters
-  skip-host-network-check: false
+  # Skip ceph daemon port reachability checks between ODF clusters
+  skip-ceph-daemon-check: false
   # Skip S3 route reachability checks
   skip-s3-check: false
   # Skip OCS provider server connectivity checks

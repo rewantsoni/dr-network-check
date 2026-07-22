@@ -16,7 +16,7 @@ var CheckNetworkCmd = &cobra.Command{
 	Use:   "check-network",
 	Short: "Check network connectivity between DR clusters",
 	Long: `Check network connectivity required for ODF disaster recovery:
-  - Host-network port reachability between ODF clusters c1 and c2
+  - Ceph daemon port reachability between ODF clusters c1 and c2
   - S3 route reachability from hub and client clusters
   - OCS provider server connectivity between base clusters
   - Proxy/noProxy configuration for S3 and provider endpoints`,
@@ -45,10 +45,10 @@ func runCheckNetwork(cmd *cobra.Command, args []string) {
 
 	report := &check.CheckReport{}
 
-	if cfg.Checks.SkipHostNetworkCheck {
-		console.Info("Skipping host-network port checks (skip-host-network-check is set)")
+	if cfg.Checks.SkipCephDaemonCheck {
+		console.Info("Skipping ceph daemon port checks (skip-ceph-daemon-check is set)")
 	} else {
-		hostResults := check.CheckHostNetworkPorts(ctx, clusters.C1, clusters.C2)
+		hostResults := check.CheckCephDaemonPorts(ctx, clusters.C1, clusters.C2, clusters.Hub)
 		report.Add(hostResults...)
 	}
 

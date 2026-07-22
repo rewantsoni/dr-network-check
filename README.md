@@ -6,7 +6,7 @@ Network connectivity checker for Data Foundation (DF) disaster recovery configur
 
 `dr-network-check` verifies network connectivity requirements across multi-cluster DF DR setups. It checks:
 
-- **Host-network ports**: Mon and OSD port reachability between ODF clusters (when CephCluster hostNetwork is enabled)
+- **Ceph daemon ports**: Mon and OSD port reachability between ODF clusters (when CephCluster hostNetwork is enabled)
 - **S3 routes**: S3 endpoint reachability from hub and client clusters
 - **OCS provider server**: LoadBalancer, NodePort, and ClusterIP service connectivity between base clusters, including Submariner/GlobalNet validation
 - **Proxy/noProxy**: Ensures all endpoints are properly configured in the cluster proxy settings
@@ -51,7 +51,7 @@ clusters:
     kubeconfig: ""
 
 checks:
-  skip-host-network-check: false
+  skip-ceph-daemon-check: false
   skip-s3-check: false
   skip-provider-check: false
 
@@ -64,7 +64,7 @@ checks:
 | `hub-passive` | Passive ACM hub cluster (optional) |
 | `c1`, `c2` | ODF base clusters with rook/ceph (required) |
 | `c1-client-1`, `c2-client-1` | Client clusters (optional, defaults to c1/c2) |
-| `skip-host-network-check` | Skip mon/OSD port checks |
+| `skip-ceph-daemon-check` | Skip mon/OSD port checks |
 | `skip-s3-check` | Skip S3 route checks |
 | `skip-provider-check` | Skip OCS provider server checks |
 | `test-pod-image` | Override the image used for test pods |

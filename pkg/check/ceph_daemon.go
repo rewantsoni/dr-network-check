@@ -31,8 +31,8 @@ type daemonEndpoint struct {
 	daemon   string
 }
 
-func CheckHostNetworkPorts(ctx context.Context, c1, c2 *cluster.Cluster) []CheckResult {
-	console.Info("Checking host-network port reachability between ODF clusters")
+func CheckCephDaemonPorts(ctx context.Context, c1, c2, hub *cluster.Cluster) []CheckResult {
+	console.Info("Checking ceph daemon port reachability between ODF clusters")
 
 	hostNetC1, err := isHostNetworkEnabled(ctx, c1)
 	if err != nil {
@@ -41,10 +41,6 @@ func CheckHostNetworkPorts(ctx context.Context, c1, c2 *cluster.Cluster) []Check
 			Name: "cephcluster-hostnet-c1", Status: StatusFail,
 			Message: fmt.Sprintf("Failed to check CephCluster hostNetwork on %s: %v", c1.Name, err),
 		}}
-	}
-
-	if !hostNetC1 {
-		return nil
 	}
 
 	hostNetC2, err := isHostNetworkEnabled(ctx, c2)
@@ -56,8 +52,16 @@ func CheckHostNetworkPorts(ctx context.Context, c1, c2 *cluster.Cluster) []Check
 		}}
 	}
 
-	if !hostNetC2 {
-		return nil
+	if !hostNetC1 || !hostNetC2 {
+		console.Info("hostNetwork is not enabled on all clusters — skipping ceph daemon port checks")
+		var results []CheckResult
+		if !hostNetC1 {
+			results = append(results, checkCephMCS(ctx, c1, hub)...)
+		}
+		if !hostNetC2 {
+			results = append(results, checkCephMCS(ctx, c2, hub)...)
+		}
+		return results
 	}
 
 	endpointsC1, err := discoverDaemonEndpoints(ctx, c1)
@@ -508,4 +512,116 @@ func getNodeInternalIP(node *corev1.Node) string {
 	}
 
 	return ""
+}
+
+func checkMultiClusterService(ctx context.Context, cl *cluster.Cluster, managedClusterName string) []CheckResult {
+	dynClient, err := dynamic.NewForConfig(cl.RestConfig)
+	if err != nil {
+		return []CheckResult{{
+			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusFail,
+			Message: fmt.Sprintf("Failed to create dynamic client on %s: %v", cl.Name, err),
+		}}
+	}
+
+	obj, err := dynClient.Resource(storageClusterGVR).Namespace(storageNamespace).Get(
+		ctx, "ocs-storagecluster", metav1.GetOptions{})
+	if err != nil {
+		return []CheckResult{{
+			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusFail,
+			Message: fmt.Sprintf("Failed to get StorageCluster on %s: %v", cl.Name, err),
+		}}
+	}
+
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	if spec == nil {
+		return mcsNotConfigured(cl.Name, managedClusterName)
+	}
+
+	network, _ := spec["network"].(map[string]interface{})
+	if network == nil {
+		return mcsNotConfigured(cl.Name, managedClusterName)
+	}
+
+	mcs, _ := network["multiClusterService"].(map[string]interface{})
+	if mcs == nil {
+		return mcsNotConfigured(cl.Name, managedClusterName)
+	}
+
+	enabled, _ := mcs["enabled"].(bool)
+	clusterID, _ := mcs["clusterID"].(string)
+
+	if !enabled {
+		console.Warn("multiClusterService is not enabled on %s", cl.Name)
+
+		return mcsNotConfigured(cl.Name, managedClusterName)
+	}
+
+	if clusterID == "" {
+		console.Warn("multiClusterService on %s has no clusterID set", cl.Name)
+
+		return []CheckResult{{
+			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusWarn,
+			Message: fmt.Sprintf("multiClusterService on %s has no clusterID set — "+
+				"patch StorageCluster:\n"+
+				"    oc patch storagecluster ocs-storagecluster -n %s "+
+				"--type merge --patch '{\"spec\":{\"network\":{\"multiClusterService\":{\"clusterID\":\"%s\",\"enabled\":true}}}}'",
+				cl.Name, storageNamespace, managedClusterName),
+		}}
+	}
+
+	if clusterID != managedClusterName {
+		console.Warn("multiClusterService clusterID on %s is %q, expected %q", cl.Name, clusterID, managedClusterName)
+
+		return []CheckResult{{
+			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusWarn,
+			Message: fmt.Sprintf("multiClusterService clusterID on %s is %q, expected managed cluster name %q",
+				cl.Name, clusterID, managedClusterName),
+		}}
+	}
+
+	console.Pass("multiClusterService is configured on %s (clusterID: %s)", cl.Name, clusterID)
+
+	return []CheckResult{{
+		Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusPass,
+		Message: fmt.Sprintf("multiClusterService is configured on %s (clusterID: %s)", cl.Name, clusterID),
+	}}
+}
+
+func mcsNotConfigured(clName, managedClusterName string) []CheckResult {
+	console.Warn("multiClusterService is not configured on %s", clName)
+
+	return []CheckResult{{
+		Name: fmt.Sprintf("multicluster-svc-%s", clName), Status: StatusWarn,
+		Message: fmt.Sprintf("multiClusterService is not configured on %s — "+
+			"patch StorageCluster:\n"+
+			"    oc patch storagecluster ocs-storagecluster -n %s "+
+			"--type merge --patch '{\"spec\":{\"network\":{\"multiClusterService\":{\"clusterID\":\"%s\",\"enabled\":true}}}}'",
+			clName, storageNamespace, managedClusterName),
+	}}
+}
+
+func checkCephMCS(ctx context.Context, cl, hub *cluster.Cluster) []CheckResult {
+	globalNet, gnResult := isGlobalNetEnabled(ctx, cl)
+	if gnResult != nil {
+		return []CheckResult{*gnResult}
+	}
+
+	if !globalNet {
+		return nil
+	}
+
+	console.Step("hostNetwork disabled but GlobalNet enabled on %s — checking multiClusterService", cl.Name)
+
+	managedName, err := discoverManagedClusterName(ctx, hub, cl)
+	if err != nil {
+		console.Fail("Could not discover managed cluster name for %s: %v", cl.Name, err)
+
+		return []CheckResult{{
+			Name:    fmt.Sprintf("ceph-mcs-managed-name-%s", cl.Name),
+			Status:  StatusFail,
+			Message: fmt.Sprintf("Could not discover managed cluster name for %s from hub: %v", cl.Name, err),
+		}}
+	}
+
+	return checkMultiClusterService(ctx, cl, managedName)
 }

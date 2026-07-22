@@ -30,7 +30,7 @@ When `hostNetwork: true` is set on the CephCluster CR (`ocs-storagecluster-cephc
 
 These ports must be open in any firewall or security group between the two clusters.
 
-If `hostNetwork` is not enabled, this check is not applicable — ceph traffic stays within the cluster network.
+If `hostNetwork` is not enabled, ceph daemon port checks are skipped — ceph traffic stays within the cluster network. However, when Submariner with GlobalNet is enabled and `hostNetwork` is disabled, the tool verifies that the StorageCluster has `multiClusterService` configured (see [ClusterIP with Submariner](#clusterip-with-submariner)).
 
 To check the CephCluster configuration:
 

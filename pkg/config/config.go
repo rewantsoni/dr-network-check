@@ -20,7 +20,7 @@ type ClusterConfig struct {
 }
 
 type CheckConfig struct {
-	SkipHostNetworkCheck bool `json:"skip-host-network-check" mapstructure:"skip-host-network-check"`
+	SkipCephDaemonCheck bool `json:"skip-ceph-daemon-check" mapstructure:"skip-ceph-daemon-check"`
 	SkipS3Check          bool `json:"skip-s3-check" mapstructure:"skip-s3-check"`
 	SkipProviderCheck    bool `json:"skip-provider-check" mapstructure:"skip-provider-check"`
 }

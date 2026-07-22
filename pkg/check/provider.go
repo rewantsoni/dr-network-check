@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -26,28 +25,11 @@ const (
 	defaultProviderPort        = int32(50051)
 )
 
-var (
-	serviceExportGVR = schema.GroupVersionResource{
-		Group:    "multicluster.x-k8s.io",
-		Version:  "v1alpha1",
-		Resource: "serviceexports",
-	}
-	managedClusterGVR = schema.GroupVersionResource{
-		Group:    "cluster.open-cluster-management.io",
-		Version:  "v1",
-		Resource: "managedclusters",
-	}
-	submarinerGVR = schema.GroupVersionResource{
-		Group:    "submariner.io",
-		Version:  "v1alpha1",
-		Resource: "submariners",
-	}
-	storageClusterGVR = schema.GroupVersionResource{
-		Group:    "ocs.openshift.io",
-		Version:  "v1",
-		Resource: "storageclusters",
-	}
-)
+var serviceExportGVR = schema.GroupVersionResource{
+	Group:    "multicluster.x-k8s.io",
+	Version:  "v1alpha1",
+	Resource: "serviceexports",
+}
 
 type providerEndpoint struct {
 	host    string
@@ -278,12 +260,6 @@ func checkProviderSvcClusterIP(ctx context.Context, cl, hub *cluster.Cluster, sv
 
 		console.Step("Managed cluster name for %s: %s", cl.Name, managedName)
 
-		hostNet, _ := isHostNetworkEnabled(ctx, cl)
-		if !hostNet {
-			mcsResults := checkMultiClusterService(ctx, cl, managedName)
-			results = append(results, mcsResults...)
-		}
-
 		endpoint := fmt.Sprintf("%s.%s.%s.svc.clusterset.local", managedName, providerServiceName, storageNamespace)
 		console.Step("%s on %s submariner endpoint: %s:%d", providerServiceName, cl.Name, endpoint, port)
 
@@ -339,125 +315,6 @@ func checkProviderSvcClusterIP(ctx context.Context, cl, hub *cluster.Cluster, sv
 	return results, []providerEndpoint{
 		{host: clusterIP, port: port, service: fmt.Sprintf("%s-clusterip", providerServiceName)},
 	}, noProxyHosts
-}
-
-func isGlobalNetEnabled(ctx context.Context, cl *cluster.Cluster) (bool, *CheckResult) {
-	dynClient, err := dynamic.NewForConfig(cl.RestConfig)
-	if err != nil {
-		return false, &CheckResult{
-			Name: fmt.Sprintf("globalnet-%s", cl.Name), Status: StatusFail,
-			Message: fmt.Sprintf("Failed to create dynamic client on %s: %v", cl.Name, err),
-		}
-	}
-
-	sub, err := dynClient.Resource(submarinerGVR).Namespace("submariner-operator").Get(
-		ctx, "submariner", metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) || isNoMatchError(err) {
-			console.Step("Submariner CR not found on %s — assuming GlobalNet is not enabled", cl.Name)
-			return false, nil
-		}
-
-		return false, &CheckResult{
-			Name: fmt.Sprintf("globalnet-%s", cl.Name), Status: StatusFail,
-			Message: fmt.Sprintf("Failed to get Submariner CR on %s: %v", cl.Name, err),
-		}
-	}
-
-	spec, _ := sub.Object["spec"].(map[string]interface{})
-	if spec == nil {
-		return false, nil
-	}
-
-	globalNet, _ := spec["globalCIDR"].(string)
-
-	return globalNet != "", nil
-}
-
-func checkMultiClusterService(ctx context.Context, cl *cluster.Cluster, managedClusterName string) []CheckResult {
-	dynClient, err := dynamic.NewForConfig(cl.RestConfig)
-	if err != nil {
-		return []CheckResult{{
-			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusFail,
-			Message: fmt.Sprintf("Failed to create dynamic client on %s: %v", cl.Name, err),
-		}}
-	}
-
-	obj, err := dynClient.Resource(storageClusterGVR).Namespace(storageNamespace).Get(
-		ctx, "ocs-storagecluster", metav1.GetOptions{})
-	if err != nil {
-		return []CheckResult{{
-			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusFail,
-			Message: fmt.Sprintf("Failed to get StorageCluster on %s: %v", cl.Name, err),
-		}}
-	}
-
-	spec, _ := obj.Object["spec"].(map[string]interface{})
-	if spec == nil {
-		return mcsNotConfigured(cl.Name, managedClusterName)
-	}
-
-	network, _ := spec["network"].(map[string]interface{})
-	if network == nil {
-		return mcsNotConfigured(cl.Name, managedClusterName)
-	}
-
-	mcs, _ := network["multiClusterService"].(map[string]interface{})
-	if mcs == nil {
-		return mcsNotConfigured(cl.Name, managedClusterName)
-	}
-
-	enabled, _ := mcs["enabled"].(bool)
-	clusterID, _ := mcs["clusterID"].(string)
-
-	if !enabled {
-		console.Warn("multiClusterService is not enabled on %s", cl.Name)
-
-		return mcsNotConfigured(cl.Name, managedClusterName)
-	}
-
-	if clusterID == "" {
-		console.Warn("multiClusterService on %s has no clusterID set", cl.Name)
-
-		return []CheckResult{{
-			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusWarn,
-			Message: fmt.Sprintf("multiClusterService on %s has no clusterID set — "+
-				"patch StorageCluster:\n"+
-				"    oc patch storagecluster ocs-storagecluster -n %s "+
-				"--type merge --patch '{\"spec\":{\"network\":{\"multiClusterService\":{\"clusterID\":\"%s\",\"enabled\":true}}}}'",
-				cl.Name, storageNamespace, managedClusterName),
-		}}
-	}
-
-	if clusterID != managedClusterName {
-		console.Warn("multiClusterService clusterID on %s is %q, expected %q", cl.Name, clusterID, managedClusterName)
-
-		return []CheckResult{{
-			Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusWarn,
-			Message: fmt.Sprintf("multiClusterService clusterID on %s is %q, expected managed cluster name %q",
-				cl.Name, clusterID, managedClusterName),
-		}}
-	}
-
-	console.Pass("multiClusterService is configured on %s (clusterID: %s)", cl.Name, clusterID)
-
-	return []CheckResult{{
-		Name: fmt.Sprintf("multicluster-svc-%s", cl.Name), Status: StatusPass,
-		Message: fmt.Sprintf("multiClusterService is configured on %s (clusterID: %s)", cl.Name, clusterID),
-	}}
-}
-
-func mcsNotConfigured(clName, managedClusterName string) []CheckResult {
-	console.Warn("multiClusterService is not configured on %s", clName)
-
-	return []CheckResult{{
-		Name: fmt.Sprintf("multicluster-svc-%s", clName), Status: StatusWarn,
-		Message: fmt.Sprintf("multiClusterService is not configured on %s — "+
-			"patch StorageCluster:\n"+
-			"    oc patch storagecluster ocs-storagecluster -n %s "+
-			"--type merge --patch '{\"spec\":{\"network\":{\"multiClusterService\":{\"clusterID\":\"%s\",\"enabled\":true}}}}'",
-			clName, storageNamespace, managedClusterName),
-	}}
 }
 
 func getClusterCIDR(ctx context.Context, cl *cluster.Cluster) ([]string, error) {
@@ -522,59 +379,6 @@ func checkServiceExport(ctx context.Context, cl *cluster.Cluster) CheckResult {
 		Name: fmt.Sprintf("service-export-%s", cl.Name), Status: StatusPass,
 		Message: fmt.Sprintf("ServiceExport for %s exists in %s on %s", providerServiceName, storageNamespace, cl.Name),
 	}
-}
-
-func discoverManagedClusterName(ctx context.Context, hub *cluster.Cluster, targetCl *cluster.Cluster) (string, error) {
-	dynClient, err := dynamic.NewForConfig(hub.RestConfig)
-	if err != nil {
-		return "", fmt.Errorf("creating dynamic client for hub: %w", err)
-	}
-
-	list, err := dynClient.Resource(managedClusterGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", fmt.Errorf("listing ManagedClusters on hub: %w", err)
-	}
-
-	targetHost := normalizeAPIURL(targetCl.RestConfig.Host)
-
-	for _, mc := range list.Items {
-		spec, ok := mc.Object["spec"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		configs, ok := spec["managedClusterClientConfigs"].([]interface{})
-		if !ok {
-			continue
-		}
-
-		for _, cfg := range configs {
-			cfgMap, ok := cfg.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			mcURL, _ := cfgMap["url"].(string)
-			if mcURL != "" && normalizeAPIURL(mcURL) == targetHost {
-				return mc.GetName(), nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("no ManagedCluster on hub matches API server %s for %s", targetHost, targetCl.Name)
-}
-
-func normalizeAPIURL(rawURL string) string {
-	if !strings.Contains(rawURL, "://") {
-		rawURL = "https://" + rawURL
-	}
-
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return strings.TrimRight(rawURL, "/")
-	}
-
-	return strings.TrimRight(u.Host, "/")
 }
 
 func getExportedAddress(ctx context.Context, cl *cluster.Cluster) (string, error) {
