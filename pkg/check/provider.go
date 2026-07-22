@@ -64,11 +64,8 @@ func checkProviderServices(ctx context.Context, cl, peerCl, hub *cluster.Cluster
 		host, port, svc := parseExportedAddress(exportedAddr)
 		endpoints := []providerEndpoint{{host: host, port: port, service: svc}}
 
-		proxyResults := checkProviderNoProxy(ctx, peerCl, cl.Name, []string{host})
-		results = append(results, proxyResults...)
-
-		reachResults := testProviderReachability(ctx, peerCl, cl.Name, endpoints)
-		results = append(results, reachResults...)
+		results = append(results, CheckEndpointNoProxy(peerCl.Proxy, peerCl.Name, cl.Name, "provider", []string{host})...)
+		results = append(results, testProviderReachability(ctx, peerCl, cl.Name, endpoints)...)
 
 		return results
 	}
@@ -90,13 +87,11 @@ func checkProviderServices(ctx context.Context, cl, peerCl, hub *cluster.Cluster
 	}
 
 	if len(noProxyHosts) > 0 {
-		proxyResults := checkProviderNoProxy(ctx, peerCl, cl.Name, noProxyHosts)
-		results = append(results, proxyResults...)
+		results = append(results, CheckEndpointNoProxy(peerCl.Proxy, peerCl.Name, cl.Name, "provider", noProxyHosts)...)
 	}
 
 	if len(endpoints) > 0 {
-		reachResults := testProviderReachability(ctx, peerCl, cl.Name, endpoints)
-		results = append(results, reachResults...)
+		results = append(results, testProviderReachability(ctx, peerCl, cl.Name, endpoints)...)
 	}
 
 	return results
@@ -233,14 +228,9 @@ func checkProviderSvcNodePort(ctx context.Context, cl *cluster.Cluster, svc *cor
 func checkProviderSvcClusterIP(ctx context.Context, cl, hub *cluster.Cluster, svc *corev1.Service) ([]CheckResult, []providerEndpoint, []string) {
 	var results []CheckResult
 
-	globalNet, gnResult := isGlobalNetEnabled(ctx, cl)
-	if gnResult != nil {
-		results = append(results, *gnResult)
-	}
-
 	port := getServicePort(svc)
 
-	if globalNet {
+	if cl.Submariner.GlobalNet {
 		console.Step("GlobalNet is enabled on %s — ServiceExport required", cl.Name)
 
 		seResult := checkServiceExport(ctx, cl)
@@ -418,59 +408,6 @@ func classifyEndpointService(host string) string {
 	return providerLBName
 }
 
-func checkProviderNoProxy(ctx context.Context, peerCl *cluster.Cluster, srcClName string, hosts []string) []CheckResult {
-	var proxy configv1.Proxy
-
-	err := peerCl.Client.Get(ctx, types.NamespacedName{Name: "cluster"}, &proxy)
-	if err != nil {
-		if errors.IsNotFound(err) || isNoMatchError(err) {
-			return nil
-		}
-
-		return []CheckResult{{
-			Name: fmt.Sprintf("provider-proxy-%s", peerCl.Name), Status: StatusFail,
-			Message: fmt.Sprintf("Failed to get proxy config on %s: %v", peerCl.Name, err),
-		}}
-	}
-
-	if proxy.Spec.HTTPProxy == "" && proxy.Spec.HTTPSProxy == "" {
-		return nil
-	}
-
-	noProxyEntries := parseNoProxy(proxy.Spec.NoProxy)
-	var results []CheckResult
-
-	seen := map[string]bool{}
-
-	for _, host := range hosts {
-		if seen[host] {
-			continue
-		}
-
-		seen[host] = true
-		name := fmt.Sprintf("provider-noproxy-%s-%s-%s", peerCl.Name, srcClName, host)
-
-		if isHostCoveredByNoProxy(host, noProxyEntries) {
-			console.Pass("%s: provider endpoint %s (from %s) is in noProxy", peerCl.Name, host, srcClName)
-			results = append(results, CheckResult{
-				Name: name, Status: StatusPass,
-				Message: fmt.Sprintf("%s: provider endpoint %s (from %s) is in noProxy", peerCl.Name, host, srcClName),
-			})
-		} else {
-			console.Fail("%s: provider endpoint %s (from %s) is NOT in noProxy — add it via:\n"+
-				"        oc edit proxy/cluster and add %s to spec.noProxy",
-				peerCl.Name, host, srcClName, host)
-			results = append(results, CheckResult{
-				Name: name, Status: StatusFail,
-				Message: fmt.Sprintf("%s: provider endpoint %s (from %s) is NOT in noProxy — "+
-					"add it via: oc edit proxy/cluster and add %s to spec.noProxy",
-					peerCl.Name, host, srcClName, host),
-			})
-		}
-	}
-
-	return results
-}
 
 func testProviderReachability(ctx context.Context, peerCl *cluster.Cluster, srcClName string, endpoints []providerEndpoint) []CheckResult {
 	podName := fmt.Sprintf("dr-check-provider-%s", peerCl.Name)
@@ -493,69 +430,58 @@ func testProviderReachability(ctx context.Context, peerCl *cluster.Cluster, srcC
 		}}
 	}
 
-	proxyEnv := getProxyEnv(ctx, peerCl)
+	proxyEnv := peerCl.Proxy.Env
+	grpcurlAvailable := installGrpcurl(ctx, peerCl, podName)
 
 	var results []CheckResult
 
 	for _, ep := range endpoints {
-		result := testProviderEndpoint(ctx, peerCl, podName, srcClName, ep, proxyEnv)
-		results = append(results, result)
+		curlResult := testProviderEndpoint(ctx, peerCl, podName, srcClName, ep, proxyEnv)
+		results = append(results, curlResult)
 
-		if result.Status == StatusPass {
-			console.Pass("%s", result.Message)
+		if curlResult.Status == StatusPass {
+			console.Pass("%s", curlResult.Message)
 		} else {
-			console.Fail("%s", result.Message)
+			console.Fail("%s", curlResult.Message)
+		}
+
+		if curlResult.Status == StatusPass && grpcurlAvailable {
+			grpcResult := testProviderGrpc(ctx, peerCl, podName, srcClName, ep, proxyEnv)
+			results = append(results, grpcResult)
+
+			if grpcResult.Status == StatusPass {
+				console.Pass("%s", grpcResult.Message)
+			} else {
+				console.Fail("%s", grpcResult.Message)
+			}
 		}
 	}
 
 	return results
 }
 
-func getProxyEnv(ctx context.Context, cl *cluster.Cluster) string {
-	var proxy configv1.Proxy
-
-	err := cl.Client.Get(ctx, types.NamespacedName{Name: "cluster"}, &proxy)
-	if err != nil {
-		return ""
-	}
-
-	var parts []string
-
-	if proxy.Status.HTTPProxy != "" {
-		parts = append(parts, fmt.Sprintf("HTTP_PROXY=%s http_proxy=%s", proxy.Status.HTTPProxy, proxy.Status.HTTPProxy))
-	}
-
-	if proxy.Status.HTTPSProxy != "" {
-		parts = append(parts, fmt.Sprintf("HTTPS_PROXY=%s https_proxy=%s", proxy.Status.HTTPSProxy, proxy.Status.HTTPSProxy))
-	}
-
-	if proxy.Status.NoProxy != "" {
-		parts = append(parts, fmt.Sprintf("NO_PROXY=%s no_proxy=%s", proxy.Status.NoProxy, proxy.Status.NoProxy))
-	}
-
-	if len(parts) == 0 {
-		return ""
-	}
-
-	return strings.Join(parts, " ") + " "
-}
 
 func testProviderEndpoint(ctx context.Context, peerCl *cluster.Cluster, podName, srcClName string, ep providerEndpoint, proxyEnv string) CheckResult {
 	name := fmt.Sprintf("provider-reach:%s->%s(%s:%d)", peerCl.Name, srcClName, ep.host, ep.port)
 
 	cmd := []string{
 		"bash", "-c",
-		fmt.Sprintf("%scurl -sk --max-time 5 https://%s:%d", proxyEnv, ep.host, ep.port),
+		fmt.Sprintf("%scurl -svk --max-time 5 https://%s:%d 2>&1", proxyEnv, ep.host, ep.port),
 	}
 
-	_, _, err := ExecInPod(ctx, peerCl.RestConfig, peerCl.Clientset, podName, peerCl.Namespace, cmd)
+	stdout, _, err := ExecInPod(ctx, peerCl.RestConfig, peerCl.Clientset, podName, peerCl.Namespace, cmd)
 	if err != nil {
-		return CheckResult{
-			Name:   name,
-			Status: StatusFail,
-			Message: fmt.Sprintf("%s endpoint %s:%d unreachable from %s — %s",
-				ep.service, ep.host, ep.port, peerCl.Name, reachabilityHint(ep)),
-		}
+		detail := extractCurlError(stdout)
+		dnsInfo := resolveDNS(ctx, peerCl, podName, ep.host)
+
+		msg := fmt.Sprintf("%s endpoint %s:%d unreachable from %s\n"+
+			"        curl error: %s\n"+
+			"        dns lookup: %s\n"+
+			"        hint: %s",
+			ep.service, ep.host, ep.port, peerCl.Name,
+			detail, dnsInfo, reachabilityHint(ep))
+
+		return CheckResult{Name: name, Status: StatusFail, Message: msg}
 	}
 
 	return CheckResult{
@@ -563,6 +489,121 @@ func testProviderEndpoint(ctx context.Context, peerCl *cluster.Cluster, podName,
 		Status: StatusPass,
 		Message: fmt.Sprintf("%s endpoint %s:%d reachable from %s",
 			ep.service, ep.host, ep.port, peerCl.Name),
+	}
+}
+
+func extractCurlError(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "curl:") {
+			return trimmed
+		}
+	}
+
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "Could not resolve") ||
+			strings.Contains(trimmed, "Connection refused") ||
+			strings.Contains(trimmed, "Connection timed out") ||
+			strings.Contains(trimmed, "No route to host") ||
+			strings.Contains(trimmed, "Failed to connect") {
+			return trimmed
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) > 0 {
+		last := strings.TrimSpace(lines[len(lines)-1])
+		if last != "" {
+			return last
+		}
+	}
+
+	return "unknown error"
+}
+
+func resolveDNS(ctx context.Context, cl *cluster.Cluster, podName, host string) string {
+	cmd := []string{
+		"bash", "-c",
+		fmt.Sprintf("getent hosts %s 2>&1 || echo 'resolution failed'", host),
+	}
+
+	stdout, _, err := ExecInPod(ctx, cl.RestConfig, cl.Clientset, podName, cl.Namespace, cmd)
+	if err != nil {
+		return fmt.Sprintf("failed to resolve %s", host)
+	}
+
+	return strings.TrimSpace(stdout)
+}
+
+const grpcurlVersion = "1.9.2"
+
+func installGrpcurl(ctx context.Context, cl *cluster.Cluster, podName string) bool {
+	cmd := []string{
+		"bash", "-c",
+		fmt.Sprintf(
+			`ARCH=$(uname -m); case $ARCH in aarch64) ARCH=arm64;; esac; `+
+				`curl -sL --max-time 30 https://github.com/fullstorydev/grpcurl/releases/download/v%s/grpcurl_%s_linux_${ARCH}.tar.gz `+
+				`| tar xz -C /tmp grpcurl && /tmp/grpcurl --version`,
+			grpcurlVersion, grpcurlVersion),
+	}
+
+	_, _, err := ExecInPod(ctx, cl.RestConfig, cl.Clientset, podName, cl.Namespace, cmd)
+	if err != nil {
+		console.Warn("Could not install grpcurl in test pod on %s — skipping gRPC checks", cl.Name)
+
+		return false
+	}
+
+	console.Step("Installed grpcurl in test pod on %s", cl.Name)
+
+	return true
+}
+
+func testProviderGrpc(ctx context.Context, peerCl *cluster.Cluster, podName, srcClName string, ep providerEndpoint, proxyEnv string) CheckResult {
+	name := fmt.Sprintf("provider-grpc:%s->%s(%s:%d)", peerCl.Name, srcClName, ep.host, ep.port)
+
+	cmd := []string{
+		"bash", "-c",
+		fmt.Sprintf("%s/tmp/grpcurl -insecure -max-time 5 %s:%d list 2>&1", proxyEnv, ep.host, ep.port),
+	}
+
+	stdout, _, err := ExecInPod(ctx, peerCl.RestConfig, peerCl.Clientset, podName, peerCl.Namespace, cmd)
+	if err != nil {
+		if strings.Contains(stdout, "does not support the reflection API") {
+			return CheckResult{
+				Name: name, Status: StatusPass,
+				Message: fmt.Sprintf("gRPC server at %s:%d responding from %s (reflection not enabled)",
+					ep.host, ep.port, peerCl.Name),
+			}
+		}
+
+		detail := strings.TrimSpace(stdout)
+		if detail == "" {
+			detail = err.Error()
+		}
+
+		return CheckResult{
+			Name: name, Status: StatusFail,
+			Message: fmt.Sprintf("gRPC server at %s:%d not responding from %s\n"+
+				"        grpcurl error: %s\n"+
+				"        hint: %s",
+				ep.host, ep.port, peerCl.Name, detail, reachabilityHint(ep)),
+		}
+	}
+
+	if strings.Contains(stdout, "provider.OCSProvider") {
+		return CheckResult{
+			Name: name, Status: StatusPass,
+			Message: fmt.Sprintf("gRPC service provider.OCSProvider available at %s:%d from %s",
+				ep.host, ep.port, peerCl.Name),
+		}
+	}
+
+	return CheckResult{
+		Name: name, Status: StatusPass,
+		Message: fmt.Sprintf("gRPC server at %s:%d responding from %s",
+			ep.host, ep.port, peerCl.Name),
 	}
 }
 

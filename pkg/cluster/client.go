@@ -19,6 +19,18 @@ const (
 	NamespaceOperator = "openshift-operators"
 )
 
+type SubmarinerStatus struct {
+	Enabled   bool
+	GlobalNet bool
+}
+
+type ProxyConfig struct {
+	Configured bool
+	NoProxy    []string
+	Env        string
+	ProxyURL   string
+}
+
 type Cluster struct {
 	Name       string
 	Kubeconfig string
@@ -26,6 +38,8 @@ type Cluster struct {
 	RestConfig *rest.Config
 	Clientset  kubernetes.Interface
 	Client     ctrlclient.Client
+	Submariner SubmarinerStatus
+	Proxy      ProxyConfig
 }
 
 type Clusters struct {

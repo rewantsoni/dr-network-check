@@ -249,6 +249,54 @@ func TestClassifyEndpointService(t *testing.T) {
 	}
 }
 
+func TestExtractCurlError(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			"curl error line",
+			"* Trying 10.0.0.1:50051...\n* connect to 10.0.0.1 port 50051 failed\ncurl: (7) Failed to connect to 10.0.0.1 port 50051: Connection refused",
+			"curl: (7) Failed to connect to 10.0.0.1 port 50051: Connection refused",
+		},
+		{
+			"could not resolve",
+			"* Could not resolve host: foo.svc.clusterset.local\ncurl: (6) Could not resolve host: foo.svc.clusterset.local",
+			"curl: (6) Could not resolve host: foo.svc.clusterset.local",
+		},
+		{
+			"connection timed out",
+			"* Trying 10.0.0.1:50051...\n* Connection timed out after 5000 milliseconds",
+			"* Connection timed out after 5000 milliseconds",
+		},
+		{
+			"no route to host",
+			"* Trying 10.0.0.1:50051...\n* No route to host",
+			"* No route to host",
+		},
+		{
+			"empty output",
+			"",
+			"unknown error",
+		},
+		{
+			"falls back to last line",
+			"line1\nsome unexpected error",
+			"some unexpected error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractCurlError(tt.output)
+			if got != tt.want {
+				t.Errorf("extractCurlError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReachabilityHint(t *testing.T) {
 	tests := []struct {
 		name    string

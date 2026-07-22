@@ -45,6 +45,23 @@ func runCheckNetwork(cmd *cobra.Command, args []string) {
 
 	report := &check.CheckReport{}
 
+	for _, cl := range clusters.All() {
+		if err := check.FetchProxyConfig(ctx, cl); err != nil {
+			console.Warn("Could not fetch proxy config on %s: %v", cl.Name, err)
+		}
+	}
+
+	if result := check.DetectSubmariner(ctx, clusters.C1); result != nil {
+		report.Add(*result)
+	}
+
+	if result := check.DetectSubmariner(ctx, clusters.C2); result != nil {
+		report.Add(*result)
+	}
+
+	logSubmarinerStatus(clusters.C1)
+	logSubmarinerStatus(clusters.C2)
+
 	if cfg.Checks.SkipCephDaemonCheck {
 		console.Info("Skipping ceph daemon port checks (skip-ceph-daemon-check is set)")
 	} else {
@@ -70,5 +87,18 @@ func runCheckNetwork(cmd *cobra.Command, args []string) {
 
 	if report.HasFailures() {
 		os.Exit(1)
+	}
+}
+
+func logSubmarinerStatus(cl *cluster.Cluster) {
+	if !cl.Submariner.Enabled {
+		console.Step("%s: Submariner not detected", cl.Name)
+		return
+	}
+
+	if cl.Submariner.GlobalNet {
+		console.Step("%s: Submariner with GlobalNet", cl.Name)
+	} else {
+		console.Step("%s: Submariner without GlobalNet", cl.Name)
 	}
 }

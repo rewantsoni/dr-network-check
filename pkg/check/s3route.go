@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	configv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	"github.com/rewantsoni/dr-network-check/pkg/cluster"
 	"github.com/rewantsoni/dr-network-check/pkg/console"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -133,8 +130,12 @@ func CheckS3Routes(ctx context.Context, clusters *cluster.Clusters) ([]S3Route, 
 	podCount := 0
 
 	for _, target := range targets {
-		proxyResults := checkS3ProxyConfig(ctx, target.cluster, target.label, allRoutes)
-		results = append(results, proxyResults...)
+		var routeHosts []string
+		for _, route := range allRoutes {
+			routeHosts = append(routeHosts, route.Host)
+		}
+
+		results = append(results, CheckEndpointNoProxy(target.cluster.Proxy, target.label, "", "S3", routeHosts)...)
 
 		podName := fmt.Sprintf("dr-check-s3-test-%d", podCount)
 		podCount++
@@ -161,10 +162,8 @@ func CheckS3Routes(ctx context.Context, clusters *cluster.Clusters) ([]S3Route, 
 			continue
 		}
 
-		proxyEnv := getProxyEnv(ctx, target.cluster)
-
 		for _, route := range allRoutes {
-			result := testS3Reachability(ctx, target.cluster, podName, target.label, route, proxyEnv)
+			result := testS3Reachability(ctx, target.cluster, podName, target.label, route, target.cluster.Proxy.Env)
 			results = append(results, result)
 
 			if result.Status == StatusPass {
@@ -176,53 +175,6 @@ func CheckS3Routes(ctx context.Context, clusters *cluster.Clusters) ([]S3Route, 
 	}
 
 	return allRoutes, results
-}
-
-func checkS3ProxyConfig(ctx context.Context, cl *cluster.Cluster, label string, routes []S3Route) []CheckResult {
-	var proxy configv1.Proxy
-
-	err := cl.Client.Get(ctx, types.NamespacedName{Name: "cluster"}, &proxy)
-	if err != nil {
-		if errors.IsNotFound(err) || isNoMatchError(err) {
-			return nil
-		}
-
-		return []CheckResult{{
-			Name: fmt.Sprintf("s3-proxy-%s", label), Status: StatusFail,
-			Message: fmt.Sprintf("%s: failed to get proxy config: %v", label, err),
-		}}
-	}
-
-	if proxy.Spec.HTTPProxy == "" && proxy.Spec.HTTPSProxy == "" {
-		return nil
-	}
-
-	noProxyEntries := parseNoProxy(proxy.Spec.NoProxy)
-	var results []CheckResult
-
-	for _, route := range routes {
-		name := fmt.Sprintf("s3-noproxy-%s-%s", label, route.Host)
-
-		if isHostCoveredByNoProxy(route.Host, noProxyEntries) {
-			console.Pass("%s: S3 endpoint %s is in noProxy", label, route.Host)
-			results = append(results, CheckResult{
-				Name: name, Status: StatusPass,
-				Message: fmt.Sprintf("%s: S3 endpoint %s is in noProxy", label, route.Host),
-			})
-		} else {
-			console.Fail("%s: S3 endpoint %s is NOT in noProxy (proxy: %s) — add it via:\n"+
-				"        oc edit proxy/cluster on %s and add %s to spec.noProxy",
-				label, route.Host, proxyURL(&proxy), label, route.Host)
-			results = append(results, CheckResult{
-				Name: name, Status: StatusFail,
-				Message: fmt.Sprintf("%s: S3 endpoint %s is NOT in noProxy — "+
-					"add it via: oc edit proxy/cluster on %s and add %s to spec.noProxy",
-					label, route.Host, label, route.Host),
-			})
-		}
-	}
-
-	return results
 }
 
 func testS3Reachability(ctx context.Context, cl *cluster.Cluster, podName, label string,

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/rewantsoni/dr-network-check/pkg/cluster"
-	"github.com/rewantsoni/dr-network-check/pkg/console"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -32,11 +31,11 @@ var (
 	}
 )
 
-func isGlobalNetEnabled(ctx context.Context, cl *cluster.Cluster) (bool, *CheckResult) {
+func DetectSubmariner(ctx context.Context, cl *cluster.Cluster) *CheckResult {
 	dynClient, err := dynamic.NewForConfig(cl.RestConfig)
 	if err != nil {
-		return false, &CheckResult{
-			Name: fmt.Sprintf("globalnet-%s", cl.Name), Status: StatusFail,
+		return &CheckResult{
+			Name: fmt.Sprintf("submariner-%s", cl.Name), Status: StatusFail,
 			Message: fmt.Sprintf("Failed to create dynamic client on %s: %v", cl.Name, err),
 		}
 	}
@@ -45,24 +44,24 @@ func isGlobalNetEnabled(ctx context.Context, cl *cluster.Cluster) (bool, *CheckR
 		ctx, "submariner", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) || isNoMatchError(err) {
-			console.Step("Submariner CR not found on %s — assuming GlobalNet is not enabled", cl.Name)
-			return false, nil
+			return nil
 		}
 
-		return false, &CheckResult{
-			Name: fmt.Sprintf("globalnet-%s", cl.Name), Status: StatusFail,
+		return &CheckResult{
+			Name: fmt.Sprintf("submariner-%s", cl.Name), Status: StatusFail,
 			Message: fmt.Sprintf("Failed to get Submariner CR on %s: %v", cl.Name, err),
 		}
 	}
 
+	cl.Submariner.Enabled = true
+
 	spec, _ := sub.Object["spec"].(map[string]interface{})
-	if spec == nil {
-		return false, nil
+	if spec != nil {
+		globalCIDR, _ := spec["globalCIDR"].(string)
+		cl.Submariner.GlobalNet = globalCIDR != ""
 	}
 
-	globalNet, _ := spec["globalCIDR"].(string)
-
-	return globalNet != "", nil
+	return nil
 }
 
 func discoverManagedClusterName(ctx context.Context, hub *cluster.Cluster, targetCl *cluster.Cluster) (string, error) {

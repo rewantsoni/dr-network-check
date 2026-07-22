@@ -30,7 +30,15 @@ When `hostNetwork: true` is set on the CephCluster CR (`ocs-storagecluster-cephc
 
 These ports must be open in any firewall or security group between the two clusters.
 
-If `hostNetwork` is not enabled, ceph daemon port checks are skipped — ceph traffic stays within the cluster network. However, when Submariner with GlobalNet is enabled and `hostNetwork` is disabled, the tool verifies that the StorageCluster has `multiClusterService` configured (see [ClusterIP with Submariner](#clusterip-with-submariner)).
+If `hostNetwork` is not enabled but Submariner is in use, the tool performs Submariner-aware checks depending on whether GlobalNet is enabled:
+
+**Submariner without GlobalNet:** Submariner routes ClusterIP traffic directly between clusters. The tool:
+- Verifies that the service and cluster CIDRs of each cluster are in the peer's `noProxy` configuration
+- Tests TCP reachability of each mon/OSD endpoint from the peer cluster
+
+**Submariner with GlobalNet:** Mons and OSDs are exposed via Submariner multiClusterService DNS. The tool:
+- Verifies that the StorageCluster has `multiClusterService` configured (see [ClusterIP with Submariner](#clusterip-with-submariner))
+- Resolves and tests TCP reachability of each MCS endpoint (`<managedClusterName>.rook-ceph-<daemon>.openshift-storage.svc.clusterset.local`) from the peer cluster
 
 To check the CephCluster configuration:
 
@@ -213,7 +221,7 @@ Wait for the `rook-ceph-tools` pod to become ready before running checks.
 
   S3 (HTTPS)       S3 object gateway route reachability
   Provider :50051  OCS provider server (LB / NodePort / ClusterIP+Submariner)
-  Mon / OSD        Ceph daemon ports (only when hostNetwork is enabled)
+  Mon / OSD        Ceph daemon ports (hostNetwork: node IPs; Submariner: ClusterIP or MCS DNS)
 
   All endpoints must be in noProxy when a cluster-wide proxy is configured.
 ```
